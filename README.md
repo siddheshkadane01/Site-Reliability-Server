@@ -563,7 +563,7 @@ MODEL_NAME     = os.environ["MODEL_NAME"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]   # Groq key set here
 
 client = OpenAI(
-    api_key=API_BASE_URL,
+  api_key=OPENAI_API_KEY,
     base_url=API_BASE_URL,
 )
 

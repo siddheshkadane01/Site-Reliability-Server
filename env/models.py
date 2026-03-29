@@ -1,0 +1,110 @@
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class ActionType(str, Enum):
+    CHECK_LOGS = "CHECK_LOGS"
+    INSPECT_SERVICE = "INSPECT_SERVICE"
+    RESTART_SERVICE = "RESTART_SERVICE"
+    SCALE_UP = "SCALE_UP"
+    SCALE_DOWN = "SCALE_DOWN"
+    ROLLBACK = "ROLLBACK"
+    UPDATE_CONFIG = "UPDATE_CONFIG"
+    SILENCE_ALERT = "SILENCE_ALERT"
+
+
+VALID_SERVICES = [
+    "api-gateway",
+    "auth-service",
+    "user-service",
+    "order-service",
+    "db-proxy",
+    "cache-service",
+]
+
+
+class SystemMetrics(BaseModel):
+    cpu_pct: dict[str, float] = Field(description="Per-service CPU usage 0-100")
+    mem_pct: dict[str, float] = Field(description="Per-service memory usage 0-100")
+    error_rate: dict[str, float] = Field(description="Per-service HTTP error rate 0.0-1.0")
+    latency_ms: dict[str, float] = Field(description="Per-service p99 latency in ms")
+    timestamp: datetime = Field(description="Timestamp for the metric snapshot")
+
+
+class LogEntry(BaseModel):
+    timestamp: datetime = Field(description="Timestamp of the log entry")
+    service: str = Field(description="Service that emitted the log")
+    severity: str = Field(description="Severity level: DEBUG, INFO, WARN, ERROR, CRITICAL")
+    message: str = Field(description="Human-readable log message")
+
+
+class DeployEvent(BaseModel):
+    deploy_id: str = Field(description="Unique deployment identifier")
+    timestamp: datetime = Field(description="Deployment timestamp")
+    service: str = Field(description="Service affected by deployment")
+    changes: dict[str, Any] = Field(description="Config diffs applied in this deploy")
+
+
+class Alert(BaseModel):
+    alert_id: str = Field(description="Unique alert identifier")
+    service: str = Field(description="Service associated with the alert")
+    metric: str = Field(description="Metric that breached threshold")
+    threshold: float = Field(description="Threshold value for the metric")
+    current: float = Field(description="Current observed metric value")
+    severity: str = Field(description="Alert severity level")
+    triggered_at: datetime = Field(description="Timestamp when the alert was triggered")
+    silenced: bool = Field(default=False, description="Whether the alert has been silenced")
+
+
+class HealthSummary(BaseModel):
+    per_service: dict[str, float] = Field(description="Per-service health score in range 0.0-1.0")
+    overall: float = Field(description="Mean health score across all services")
+
+
+class Observation(BaseModel):
+    step: int = Field(description="Current step in episode")
+    max_steps: int = Field(description="Max steps allowed")
+    task_id: str = Field(description="Active task: easy|medium|hard")
+    metrics: SystemMetrics = Field(description="Current system metrics")
+    logs: list[LogEntry] = Field(description="Last 10 log entries")
+    deploy_history: list[DeployEvent] = Field(description="Last 5 deploy events")
+    current_config: dict[str, Any] = Field(description="Live config key-value pairs")
+    service_graph: dict[str, list[str]] = Field(description="Service dependency map")
+    active_alerts: list[Alert] = Field(description="Active alerts")
+    health_summary: HealthSummary = Field(description="Current health summary")
+
+
+class Action(BaseModel):
+    action_type: ActionType = Field(description="Type of action to perform")
+    target_service: str = Field(description="Must be one of VALID_SERVICES")
+    config_key: str | None = Field(default=None, description="Required for UPDATE_CONFIG")
+    config_value: Any | None = Field(default=None, description="Required for UPDATE_CONFIG")
+    reason: str | None = Field(default=None, description="Agent reasoning used by Task 1 grader")
+
+
+class RewardBreakdown(BaseModel):
+    health_delta: float = Field(description="Weighted health delta contribution")
+    cost_efficiency: float = Field(description="Weighted cost efficiency contribution")
+    latency_delta: float = Field(description="Weighted latency contribution")
+    invalid_penalty: float = Field(description="Weighted invalid action penalty")
+
+
+class Reward(BaseModel):
+    step_reward: float = Field(description="Reward for the current step")
+    cumulative: float = Field(description="Cumulative reward for the episode")
+    breakdown: RewardBreakdown = Field(description="Reward component breakdown")
+
+
+class EpisodeState(BaseModel):
+    task_id: str = Field(description="Current task id")
+    scenario_id: str = Field(description="Active scenario id")
+    step: int = Field(description="Current step count")
+    done: bool = Field(description="Whether the episode has terminated")
+    observation: Observation = Field(description="Latest environment observation")
+    action_history: list[dict] = Field(description="Sequence of action payloads")
+    reward_history: list[float] = Field(description="Per-step reward values")
+    cumulative_reward: float = Field(description="Total accumulated reward")
+    grader_score: float | None = Field(default=None, description="Optional grader score")

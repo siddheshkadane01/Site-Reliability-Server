@@ -1,0 +1,16 @@
+[project]
+name = "cloud-chaos-sre"
+version = "1.0.0"
+description = "OpenEnv environment for SRE incident response simulation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+	"openenv-core>=0.2.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,81 @@
+name: cloud-chaos-sre
+version: 1.0.0
+description: >
+  An OpenEnv environment simulating a Site Reliability Engineer managing
+  a virtual data centre under active production incidents. The agent must
+  diagnose and remediate memory leaks, traffic spikes, and hidden
+  misconfigurations across six interdependent microservices.
+author:
+  name: Cloud Chaos SRE Team
+  email: your@email.com
+
+tasks:
+  - id: easy
+    name: The Detective
+    difficulty: easy
+    description: Identify the root-cause microservice in a cascading failure
+    max_steps: 15
+  - id: medium
+    name: The First Responder
+    difficulty: medium
+    description: Restore all system health metrics during an active traffic spike
+    max_steps: 15
+  - id: hard
+    name: The Architect
+    difficulty: hard
+    description: Diagnose and fix a hidden database timeout misconfiguration
+    max_steps: 20
+
+observation_space:
+  type: object
+  properties:
+    step: { type: integer }
+    metrics: { type: object, description: "Per-service CPU, memory, error rate, latency" }
+    logs: { type: array, description: "Last 10 structured log entries" }
+    deploy_history: { type: array, description: "Last 5 deployment events with config diffs" }
+    current_config: { type: object, description: "Live configuration key-value pairs" }
+    service_graph: { type: object, description: "Microservice dependency map" }
+    active_alerts: { type: array, description: "Currently triggered alarms" }
+    health_summary: { type: object, description: "Per-service and overall health 0.0-1.0" }
+
+action_space:
+  type: object
+  required: [action_type, target_service]
+  properties:
+    action_type:
+      type: string
+      enum: [CHECK_LOGS, INSPECT_SERVICE, RESTART_SERVICE, SCALE_UP, SCALE_DOWN, ROLLBACK, UPDATE_CONFIG, SILENCE_ALERT]
+    target_service:
+      type: string
+      enum: [api-gateway, auth-service, user-service, order-service, db-proxy, cache-service]
+    config_key:
+      type: string
+      description: Required for UPDATE_CONFIG actions
+    config_value:
+      description: Required for UPDATE_CONFIG actions
+    reason:
+      type: string
+      description: Agent reasoning used in Task 1 grader
+
+reward:
+  min: -1.0
+  max: 1.0
+  description: >
+    Non-sparse per-step reward. Components: health improvement delta (x0.50),
+    cost efficiency (x0.20), latency worsening penalty (x0.20),
+    invalid action penalty (x0.10).
+
+episode:
+  max_steps: 20
+  termination_conditions:
+    - All health metrics below threshold (success)
+    - Max steps reached (partial credit)
+
+tags:
+  - openenv
+  - sre
+  - reinforcement-learning
+  - infrastructure
+  - nlp
+  - agent-evaluation
+  - operations

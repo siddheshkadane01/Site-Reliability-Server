@@ -19,13 +19,17 @@ tags:
 Production-style SRE incident-response environment for training and evaluating AI agents with the standard OpenEnv loop:
 `reset()` -> `step(action)` -> `state()`.
 
-## Judge Quick Read
+This benchmark mirrors practical on-call operations used in real engineering teams: triaging alerts,
+isolating root causes across service dependencies, and applying safe remediations under time pressure.
+It is useful for evaluating whether an agent can improve reliability outcomes instead of only solving abstract tasks.
+
+## Project Highlights
 
 - Real-world utility: production-style SRE incident diagnosis and remediation across dependent microservices.
-- OpenEnv compliance: typed Observation, Action, Reward models + `reset/step/state` + `openenv.yaml`.
-- Task quality: 4 tasks (`easy`, `medium`, `hard`, `expert`) with deterministic programmatic graders.
-- Reward quality: dense per-step signal with progress + latency + penalty terms.
-- Reliability gates: HF `/reset` live, Docker build success, OpenEnv validator pass.
+- OpenEnv compliance: typed Observation/Action/Reward models with `reset`, `step`, `state`, and `openenv.yaml`.
+- Task quality: 4 progressive tasks (`easy`, `medium`, `hard`, `expert`) with deterministic programmatic graders.
+- Learning quality: dense reward signal with progress terms and penalties for low-value behavior.
+- Deployment readiness: works with Docker, Hugging Face Spaces, and OpenEnv validation.
 - Infra fit: designed for `vcpu=2`, `memory=8gb`, with inference timeout bounded below 20 minutes.
 
 ## Why This Matters
@@ -63,36 +67,25 @@ flowchart LR
     T1[Easy: Detective] --> T2[Medium: First Responder] --> T3[Hard: Architect] --> T4[Expert: Storm Chaser]
 ```
 
-```mermaid
-pie title Organizer Scoring Weights
-    "Real-world utility" : 30
-    "Task and grader quality" : 25
-    "Environment design" : 20
-    "Code quality and spec compliance" : 15
-    "Creativity and novelty" : 10
-```
+## Capability Matrix
 
-## Organizer Requirement Checklist
-
-| Requirement | Status |
+| Area | Implementation |
 |---|---|
-| Real-world task simulation | PASS |
-| Typed models (Observation/Action/Reward) | PASS |
-| OpenEnv API (`reset`, `step`, `state`) | PASS |
-| openenv.yaml present and valid | PASS |
-| Minimum 3 tasks with deterministic graders | PASS (4 tasks) |
-| Reward with partial progress + penalties | PASS |
-| `inference.py` in repo root | PASS |
-| OpenAI client usage with env vars | PASS |
-| Docker build/run | PASS |
-| HF Space responds | PASS |
+| Environment API | FastAPI with `POST /reset`, `POST /step`, `GET /state` |
+| Typed models | Pydantic models for Observation, Action, Reward, EpisodeState |
+| Tasks | 4 tasks with increasing difficulty and step budgets |
+| Grading | Deterministic graders returning numeric `0.0-1.0` scores |
+| Rewards | Dense, per-step shaping with positive progress and penalties |
+| Baseline | Root-level `inference.py` using OpenAI client + env vars |
+| Packaging | Dockerfile + `openenv.yaml` + local OpenEnv validation |
+| Deployment | HF Space-compatible containerized runtime |
 
-## Submission Evidence Snapshot
+## Engineering Quality Snapshot
 
-- HF gate: `POST /reset` returned HTTP 200 in latest pre-submission check.
-- Docker gate: `docker build .` completed successfully on current commit.
-- OpenEnv gate: `/Users/siddhesh/Documents/Projects/Cloud-Chaos-SRE/.venv/bin/openenv validate` returned OK.
-- Baseline gate: `/baseline` runs completed successfully with `ok=true`, well below 20-minute runtime cap.
+- Typed models and strict API contract for predictable agent interaction.
+- Deterministic scenario + grader pipeline for fair task-level scoring.
+- Containerized deployment that starts cleanly and serves health/reset/step/state/grader paths.
+- Baseline inference pipeline with bounded runtime and machine-readable score artifacts.
 
 ## Tasks and Difficulty
 
@@ -123,6 +116,14 @@ pie title Organizer Scoring Weights
 - `target_service`: one of six services
 - `config_key`, `config_value` (for UPDATE_CONFIG)
 - `reason`
+
+### Space Summary
+
+| Type | Core Fields | Purpose |
+|---|---|---|
+| Observation | metrics, logs, deploy_history, config, alerts, graph | Gives full operational context per step |
+| Action | action_type, target_service, optional config edits | Encodes one remediation decision per step |
+| Reward | step_reward, cumulative, breakdown | Explains why an action helped or hurt |
 
 ## Reward Design (Meaningful, Non-Sparse)
 
@@ -190,7 +191,7 @@ docker run -p 7860:7860 site-reliability-server
 curl http://localhost:7860/health
 ```
 
-## Pre-Submission Validator (Organizer Style)
+## Validation Commands
 
 ```bash
 # HF ping
@@ -205,18 +206,50 @@ docker build .
 /Users/siddhesh/Documents/Projects/Cloud-Chaos-SRE/.venv/bin/openenv validate
 ```
 
-If all three pass, submission is ready.
+These checks verify environment reachability, container buildability, and OpenEnv compliance.
 
 ## Project Structure
 
 ```text
 site-reliability-server/
-├── main.py
-├── inference.py
-├── openenv.yaml
-├── Dockerfile
-├── requirements.txt
-├── readme.md
-├── env/
-└── scenarios/
+├── main.py, inference.py, openenv.yaml, Dockerfile, requirements.txt
+├── readme.md, instruction.md, pyproject.toml, uv.lock, test_env.py
+├── env/                        # core environment logic
+│   ├── models.py, environment.py, simulator.py
+│   ├── graders.py, tasks.py, data_generator.py
+│   └── __init__.py
+├── scenarios/                  # task datasets
+│   ├── easy/, medium/, hard/, expert/
+├── static/                     # web landing page
+│   └── index.html
+└── server/                     # compatibility entrypoint
+    ├── app.py
+    └── __init__.py
+```
+
+### Core Runtime Flow
+
+```mermaid
+sequenceDiagram
+  participant Agent
+  participant API as FastAPI
+  participant Env as SREEnvironment
+  participant Sim as Simulator
+  participant Grader
+
+  Agent->>API: POST /reset
+  API->>Env: reset(task_id)
+  Env->>Sim: load scenario + initial state
+  API-->>Agent: Observation
+
+  loop Episode steps
+    Agent->>API: POST /step(action)
+    API->>Env: step(action)
+    Env->>Sim: apply action + transition
+    API-->>Agent: Observation + Reward + Done + Info
+  end
+
+  Agent->>API: POST /grader(state)
+  API->>Grader: deterministic scoring
+  API-->>Agent: score (0.0 to 1.0) + breakdown
 ```

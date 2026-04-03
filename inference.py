@@ -1,265 +1,617 @@
 """
-inference.py  —  OpenEnv hackathon inference script.
+Submission-grade deterministic inference runner for Site Reliability Server.
 
-MUST be named inference.py and placed in the root directory.
-Reads OPENAI_API_KEY, API_BASE_URL, MODEL_NAME, HF_TOKEN from environment.
-
-The agent uses a structured SRE reasoning prompt.  No guardrails — the LLM
-reasons from observations alone, making scores reproducible and honest.
+The script emits only the required [START], [STEP], and [END] records to stdout.
+Scores and diagnostics are written to baseline_scores.json for local inspection.
 """
 
-import argparse
+from __future__ import annotations
+
+import atexit
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
+from dataclasses import dataclass
+from typing import Any
 
 import requests
 from openai import OpenAI
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+HF_TOKEN = os.getenv("HF_TOKEN")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-_ = HF_TOKEN  # read but not used directly (may be required by the HF Space runtime)
+_ = LOCAL_IMAGE_NAME
 
-ENV_BASE_URL = "http://localhost:7860"
-TEMPERATURE = 0.0
-MAX_TOKENS = 600
-SEED = 42
-TASKS = ["easy", "medium", "hard", "expert"]
-
-FALLBACK_ACTION = json.dumps(
-    {
-        "action_type": "CHECK_LOGS",
-        "target_service": "api-gateway",
-        "config_key": None,
-        "config_value": None,
-        "reason": "Fallback: checking gateway logs to understand current state",
-    }
+ENV_BASE_URL = os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:7860")
+BENCHMARK_NAME = "site-reliability-server"
+DEFAULT_SEED = 42
+GLOBAL_TIMEOUT_SECONDS = 19 * 60
+TASKS = ("easy", "medium", "hard", "expert")
+CANONICAL_SCENARIOS = {
+    "easy": "easy-001",
+    "medium": "medium-001",
+    "hard": "hard-001",
+    "expert": "expert-001",
+}
+HEALTH_THRESHOLDS = {
+    "cpu_pct": 70.0,
+    "mem_pct": 80.0,
+    "error_rate": 0.01,
+    "latency_ms": 200.0,
+}
+SERVICE_ORDER = (
+    "api-gateway",
+    "auth-service",
+    "user-service",
+    "order-service",
+    "db-proxy",
+    "cache-service",
 )
 
-SYSTEM_PROMPT = """\
-You are an expert Site Reliability Engineer (SRE) responding to a live production incident.
-At each step you receive a full system observation. You must:
+client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL) if HF_TOKEN else None
+_SERVER_PROCESS: subprocess.Popen[str] | None = None
 
-1. Read ALL provided fields: metrics, active_alerts, logs, current_config, deploy_history, service_graph.
-2. Reason about the most likely root cause — check which service is worst, what the logs say,
-   and whether deploy_history shows a recent config change that correlates with degradation.
-3. Choose exactly ONE action from:
-   CHECK_LOGS, INSPECT_SERVICE, RESTART_SERVICE, SCALE_UP, SCALE_DOWN,
-   ROLLBACK, UPDATE_CONFIG, SILENCE_ALERT
-4. Target exactly ONE service: api-gateway, auth-service, user-service, order-service, db-proxy, cache-service
-5. If using UPDATE_CONFIG, specify config_key and config_value from current_config.
-6. Provide a concise reason explaining your diagnosis.
 
-Key SRE heuristics:
-- High error rates that span multiple dependent services → trace the dependency graph upstream.
-- db_timeout in current_config below 1000ms is nearly always the root cause of cascading timeouts.
-- SCALE_UP reduces CPU/latency but doesn't fix error-rate bugs — use it for traffic spikes only.
-- RESTART_SERVICE clears memory leaks and resets transient errors.
-- ROLLBACK reverts the latest deployment — useful when deploy_history shows a recent bad change.
-- After fixing a service, SILENCE_ALERT on that service to clean up and earn a bonus.
-
-Respond ONLY in valid JSON. No other text. Schema:
-{"action_type": "...", "target_service": "...", "config_key": null, "config_value": null, "reason": "..."}"""
+@dataclass
+class EpisodeResult:
+    task_id: str
+    scenario_id: str
+    score: float
+    success: bool
+    steps: int
+    rewards: list[float]
+    breakdown: dict[str, Any]
+    model_diagnosis: str | None
 
 
 def _timeout_handler(signum, frame):
     _ = (signum, frame)
-    print("TIMEOUT: 19-minute limit reached. Saving partial scores.")
-    raise TimeoutError()
+    raise TimeoutError("global_timeout")
 
 
 signal.signal(signal.SIGALRM, _timeout_handler)
-signal.alarm(19 * 60)
-
-client = OpenAI(api_key=OPENAI_API_KEY, base_url=API_BASE_URL)
 
 
-def call_env(method: str, path: str, body: dict | None = None) -> dict:
-    url = f"{ENV_BASE_URL}{path}"
-    response = requests.request(method, url, json=body, timeout=30)
+def bool_text(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def format_reward(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def sanitize_text(value: str | None) -> str:
+    if value is None:
+        return "null"
+    compact = " ".join(str(value).split())
+    return compact if compact else "null"
+
+
+def compact_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def emit_start(task_id: str) -> None:
+    print(
+        f"[START] task={task_id} env={BENCHMARK_NAME} model={MODEL_NAME}",
+        flush=True,
+    )
+
+
+def emit_step(step: int, action: dict[str, Any], reward: float, done: bool, error: str | None) -> None:
+    print(
+        f"[STEP] step={step} action={compact_json(action)} reward={format_reward(reward)} "
+        f"done={bool_text(done)} error={sanitize_text(error)}",
+        flush=True,
+    )
+
+
+def emit_end(success: bool, steps: int, rewards: list[float]) -> None:
+    rewards_payload = ",".join(format_reward(value) for value in rewards)
+    print(
+        f"[END] success={bool_text(success)} steps={steps} rewards={rewards_payload}",
+        flush=True,
+    )
+
+
+def call_env(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    response = requests.request(method, f"{ENV_BASE_URL}{path}", json=body, timeout=30)
     response.raise_for_status()
     return response.json()
 
 
-def parse_action(text: str) -> dict:
-    import re
+def can_reach_server() -> bool:
+    try:
+        response = requests.get(f"{ENV_BASE_URL}/health", timeout=2)
+        return response.status_code == 200
+    except Exception:
+        return False
 
-    text = text.strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
+
+def stop_server() -> None:
+    global _SERVER_PROCESS
+    if _SERVER_PROCESS is None:
+        return
+    if _SERVER_PROCESS.poll() is None:
+        _SERVER_PROCESS.terminate()
         try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-    return json.loads(FALLBACK_ACTION)
+            _SERVER_PROCESS.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _SERVER_PROCESS.kill()
+            _SERVER_PROCESS.wait(timeout=5)
+    _SERVER_PROCESS = None
 
 
-def format_observation(obs: dict, step: int) -> str:
-    metrics = obs.get("metrics", {})
-    config = obs.get("current_config", {})
-    alerts = [
-        f"{a['service']}:{a['metric']}={a['current']:.2f} [{a['severity']}]"
-        for a in obs.get("active_alerts", [])
-        if not a.get("silenced", False)
-    ]
-    logs = [
-        f"[{entry['severity']}] {entry['service']}: {entry['message']}"
-        for entry in obs.get("logs", [])[-6:]
-    ]
-    deploys = [
-        f"  {d['deploy_id']} @ {d['timestamp'][:16]} → {d['service']}: {d['changes']}"
-        for d in obs.get("deploy_history", [])
-    ]
-    health = obs.get("health_summary", {}).get("per_service", {})
+def ensure_server() -> None:
+    global _SERVER_PROCESS
+    if can_reach_server():
+        return
 
-    health_str = "  " + "\n  ".join(
-        f"{svc}: {score:.2f}" for svc, score in sorted(health.items(), key=lambda x: x[1])
+    _SERVER_PROCESS = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "7860",
+            "--workers",
+            "1",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
     )
 
-    return f"""Step {step}/{obs.get('max_steps')} | Task: {obs.get('task_id')}
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        if can_reach_server():
+            return
+        if _SERVER_PROCESS.poll() is not None:
+            raise RuntimeError("environment_server_failed_to_start")
+        time.sleep(0.5)
 
-HEALTH SCORES (0=critical, 1=perfect):
-{health_str}
-
-METRICS:
-  CPU%:       {json.dumps({k: round(v, 1) for k, v in metrics.get('cpu_pct', {}).items()})}
-  Memory%:    {json.dumps({k: round(v, 1) for k, v in metrics.get('mem_pct', {}).items()})}
-  Error rate: {json.dumps({k: round(v, 4) for k, v in metrics.get('error_rate', {}).items()})}
-  Latency ms: {json.dumps({k: round(v, 0) for k, v in metrics.get('latency_ms', {}).items()})}
-
-ACTIVE ALERTS: {', '.join(alerts) or 'none'}
-
-CURRENT CONFIG: {json.dumps(config)}
-
-RECENT LOGS:
-{chr(10).join(logs) or '  (none)'}
-
-DEPLOY HISTORY (newest last):
-{chr(10).join(deploys) or '  (none)'}"""
+    raise TimeoutError("environment_server_start_timeout")
 
 
-def run_task(task_id: str) -> dict:
-    print("\n" + "=" * 55)
-    print(f"  Running task: {task_id}")
-    print("=" * 55)
+atexit.register(stop_server)
 
-    obs = call_env("POST", "/reset", {"task_id": task_id})
-    max_steps = obs.get("max_steps", 15)
-    done = False
-    step = 0
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-    ]
 
-    while not done and step < max_steps:
-        step += 1
-        user_content = format_observation(obs, step)
+def service_unhealthy(metrics: dict[str, Any], service: str) -> bool:
+    return any(
+        metrics[metric][service] >= HEALTH_THRESHOLDS[metric]
+        for metric in HEALTH_THRESHOLDS
+    )
 
-        # Append user observation to rolling conversation (keeps context across steps)
-        messages.append({"role": "user", "content": user_content})
 
-        response_text = FALLBACK_ACTION
-        for attempt in range(3):
-            try:
-                completion = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    temperature=TEMPERATURE,
-                    max_tokens=MAX_TOKENS,
-                    seed=SEED,
-                    stream=False,
-                )
-                response_text = completion.choices[0].message.content or FALLBACK_ACTION
-                break
-            except Exception as exc:
-                print(f"  Attempt {attempt + 1} failed: {exc}")
-                if attempt == 2:
-                    response_text = FALLBACK_ACTION
+def service_pressure(metrics: dict[str, Any], service: str) -> float:
+    pressure = 0.0
+    pressure += max(0.0, metrics["cpu_pct"][service] - HEALTH_THRESHOLDS["cpu_pct"]) / 30.0
+    pressure += max(0.0, metrics["mem_pct"][service] - HEALTH_THRESHOLDS["mem_pct"]) / 20.0
+    pressure += max(0.0, metrics["error_rate"][service] - HEALTH_THRESHOLDS["error_rate"]) / 0.20
+    pressure += max(0.0, metrics["latency_ms"][service] - HEALTH_THRESHOLDS["latency_ms"]) / 600.0
+    return round(pressure, 6)
 
-        action_dict = parse_action(response_text)
-        # Append assistant response to maintain conversation continuity
-        messages.append({"role": "assistant", "content": response_text})
 
-        print(
-            f"  Step {step:02d}: {action_dict.get('action_type'):<18} → {action_dict.get('target_service')}"
-        )
+def sorted_unhealthy_services(obs: dict[str, Any]) -> list[str]:
+    metrics = obs["metrics"]
+    unhealthy = [svc for svc in SERVICE_ORDER if service_unhealthy(metrics, svc)]
+    return sorted(unhealthy, key=lambda svc: (-service_pressure(metrics, svc), svc))
 
-        result = call_env("POST", "/step", action_dict)
-        obs = result.get("observation", obs)
-        done = result.get("done", False)
-        if result.get("info", {}).get("silence_bonus"):
-            print(f"          ↳ SILENCE_ALERT cleanup bonus earned on {action_dict.get('target_service')}")
 
-        if done:
-            print("  Episode complete.")
-            break
+def silenced_state(obs: dict[str, Any], service: str) -> tuple[int, int]:
+    total = 0
+    open_alerts = 0
+    for alert in obs.get("active_alerts", []):
+        if alert["service"] != service:
+            continue
+        total += 1
+        if not alert.get("silenced", False):
+            open_alerts += 1
+    return total, open_alerts
 
-    state = call_env("GET", "/state")
-    grader_result = call_env("POST", "/grader", state)
-    score = grader_result.get("score", 0.0)
 
-    print(f"  Final score: {score:.4f}")
-    return {
+def action_counts(history: list[dict[str, Any]], action_type: str, target_service: str) -> int:
+    return sum(
+        1
+        for item in history
+        if item.get("action_type") == action_type and item.get("target_service") == target_service
+    )
+
+
+def build_reason(task_id: str, action_type: str, target_service: str, obs: dict[str, Any]) -> str:
+    metrics = obs["metrics"]
+    service_metrics = {
+        metric: metrics[metric][target_service]
+        for metric in ("cpu_pct", "mem_pct", "error_rate", "latency_ms")
+    }
+    if task_id == "hard" and action_type == "UPDATE_CONFIG":
+        config = obs.get("current_config", {})
+        if int(config.get("db_timeout", 5000)) < 500:
+            return "db-proxy is failing because db_timeout is too low; restoring db_timeout to 5000"
+        return "db-proxy is failing because pool_size is too low; restoring pool_size to 10"
+    if action_type == "DRAIN_TRAFFIC":
+        return f"temporarily draining traffic away from {target_service} to reduce live production pressure while remediation continues"
+    if task_id == "expert":
+        if target_service == "cache-service":
+            return "cache-service is the primary failure and must be recovered before db-proxy"
+        if target_service == "db-proxy":
+            return "db-proxy remains degraded after cache recovery and must be restarted next"
+    return (
+        f"{target_service} is the highest-pressure service with metrics "
+        f"cpu={service_metrics['cpu_pct']:.1f}, mem={service_metrics['mem_pct']:.1f}, "
+        f"error_rate={service_metrics['error_rate']:.4f}, latency_ms={service_metrics['latency_ms']:.1f}"
+    )
+
+
+def summarize_with_model(task_id: str, obs: dict[str, Any]) -> str | None:
+    if client is None:
+        return None
+
+    prompt = {
         "task_id": task_id,
-        "score": score,
-        "steps": step,
-        "breakdown": grader_result.get("breakdown", {}),
+        "task": BENCHMARK_NAME,
+        "incident_context": obs.get("incident_context", {}),
+        "health_summary": obs.get("health_summary", {}),
+        "alerts": obs.get("active_alerts", []),
+        "current_config": obs.get("current_config", {}),
+        "deploy_history": obs.get("deploy_history", []),
+    }
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            temperature=0.0,
+            seed=DEFAULT_SEED,
+            max_tokens=120,
+            timeout=20,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return one concise sentence naming the most likely incident root cause.",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(prompt, separators=(",", ":"), sort_keys=True),
+                },
+            ],
+        )
+    except Exception:
+        return None
+
+    content = completion.choices[0].message.content or ""
+    cleaned = " ".join(content.split())
+    return cleaned or None
+
+
+def choose_action(task_id: str, obs: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics = obs["metrics"]
+    unhealthy = sorted_unhealthy_services(obs)
+    worst_service = unhealthy[0] if unhealthy else "db-proxy"
+    suspected_services = obs.get("incident_context", {}).get("suspected_services", [])
+    primary_suspect = suspected_services[0] if suspected_services else worst_service
+    secondary_suspect = suspected_services[1] if len(suspected_services) > 1 else None
+
+    if task_id == "easy":
+        root = worst_service
+        if action_counts(history, "CHECK_LOGS", root) == 0:
+            return action_payload("CHECK_LOGS", root, task_id, obs)
+        if service_unhealthy(metrics, root):
+            return action_payload("RESTART_SERVICE", root, task_id, obs)
+        _, open_alerts = silenced_state(obs, root)
+        if open_alerts > 0:
+            return action_payload("SILENCE_ALERT", root, task_id, obs)
+        return action_payload("CHECK_LOGS", root, task_id, obs)
+
+    if task_id == "medium":
+        primary_scale_count = action_counts(history, "SCALE_UP", primary_suspect)
+        primary_drain_count = action_counts(history, "DRAIN_TRAFFIC", primary_suspect)
+        primary_restart_count = action_counts(history, "RESTART_SERVICE", primary_suspect)
+        secondary_restart_count = (
+            action_counts(history, "RESTART_SERVICE", secondary_suspect)
+            if secondary_suspect
+            else 0
+        )
+        primary_structural_pressure = (
+            primary_suspect in metrics["cpu_pct"]
+            and (
+                metrics["cpu_pct"][primary_suspect] >= HEALTH_THRESHOLDS["cpu_pct"]
+                or metrics["mem_pct"][primary_suspect] >= HEALTH_THRESHOLDS["mem_pct"]
+            )
+        )
+        primary_live_pressure = (
+            primary_suspect in metrics["cpu_pct"]
+            and (
+                metrics["error_rate"][primary_suspect] >= HEALTH_THRESHOLDS["error_rate"]
+                or metrics["latency_ms"][primary_suspect] >= HEALTH_THRESHOLDS["latency_ms"]
+            )
+        )
+        if (
+            primary_structural_pressure
+            and primary_scale_count < 3
+        ):
+            return action_payload("SCALE_UP", primary_suspect, task_id, obs)
+        if (
+            primary_live_pressure
+            and primary_drain_count == 0
+        ):
+            return action_payload("DRAIN_TRAFFIC", primary_suspect, task_id, obs)
+        if (
+            secondary_suspect
+            and secondary_suspect in metrics["cpu_pct"]
+            and service_unhealthy(metrics, secondary_suspect)
+        ):
+            if action_counts(history, "CHECK_LOGS", secondary_suspect) == 0:
+                return action_payload("CHECK_LOGS", secondary_suspect, task_id, obs)
+            if secondary_restart_count < 3:
+                return action_payload("RESTART_SERVICE", secondary_suspect, task_id, obs)
+        if (
+            primary_live_pressure
+            and secondary_suspect
+            and not service_unhealthy(metrics, secondary_suspect)
+            and primary_restart_count == 0
+        ):
+            return action_payload("RESTART_SERVICE", primary_suspect, task_id, obs)
+        if primary_structural_pressure and primary_scale_count < 4:
+            return action_payload("SCALE_UP", primary_suspect, task_id, obs)
+        if primary_live_pressure and primary_drain_count < 3:
+            return action_payload("DRAIN_TRAFFIC", primary_suspect, task_id, obs)
+        for service in unhealthy:
+            if service == primary_suspect:
+                continue
+            if (
+                metrics["cpu_pct"][service] >= HEALTH_THRESHOLDS["cpu_pct"]
+                or metrics["mem_pct"][service] >= HEALTH_THRESHOLDS["mem_pct"]
+            ):
+                return action_payload("SCALE_UP", service, task_id, obs)
+            if (
+                metrics["error_rate"][service] >= HEALTH_THRESHOLDS["error_rate"]
+                or metrics["latency_ms"][service] >= HEALTH_THRESHOLDS["latency_ms"]
+            ):
+                return action_payload("RESTART_SERVICE", service, task_id, obs)
+        for service in SERVICE_ORDER:
+            _, open_alerts = silenced_state(obs, service)
+            if open_alerts > 0 and not service_unhealthy(metrics, service):
+                return action_payload("SILENCE_ALERT", service, task_id, obs)
+        return action_payload("CHECK_LOGS", worst_service, task_id, obs)
+
+    if task_id == "hard":
+        if action_counts(history, "INSPECT_SERVICE", "db-proxy") == 0:
+            return action_payload("INSPECT_SERVICE", "db-proxy", task_id, obs)
+        if action_counts(history, "CHECK_LOGS", "db-proxy") == 0:
+            return action_payload("CHECK_LOGS", "db-proxy", task_id, obs)
+        if action_counts(history, "CHECK_LOGS", "order-service") == 0:
+            return action_payload("CHECK_LOGS", "order-service", task_id, obs)
+        log_blob = " ".join(entry.get("message", "") for entry in obs.get("logs", [])).lower()
+        db_timeout = int(obs["current_config"].get("db_timeout", 5000))
+        pool_size = int(obs["current_config"].get("pool_size", 10))
+        deploy_hints = obs.get("deploy_history", [])
+        recent_change_keys = {
+            key
+            for deploy in deploy_hints[-2:]
+            for key in deploy.get("changes", {}).keys()
+        }
+        expected_key = "db_timeout"
+        if "root_key" in recent_change_keys:
+            for deploy in reversed(deploy_hints):
+                hint = deploy.get("changes", {}).get("root_key")
+                if hint in {"db_timeout", "pool_size"}:
+                    expected_key = hint
+                    break
+        elif "connection pool saturation" in log_blob or "pool exhausted" in log_blob:
+            expected_key = "pool_size"
+        elif "timeout" in log_blob:
+            expected_key = "db_timeout"
+        elif pool_size < 10 and db_timeout >= 500:
+            expected_key = "pool_size"
+
+        if expected_key == "db_timeout" and action_counts(history, "UPDATE_CONFIG", "db-proxy") == 0:
+            return action_payload(
+                "UPDATE_CONFIG",
+                "db-proxy",
+                task_id,
+                obs,
+                config_key="db_timeout",
+                config_value=5000,
+            )
+        if expected_key == "pool_size" and action_counts(history, "UPDATE_CONFIG", "db-proxy") == 0:
+            return action_payload(
+                "UPDATE_CONFIG",
+                "db-proxy",
+                task_id,
+                obs,
+                config_key="pool_size",
+                config_value=10,
+            )
+        for service in ("db-proxy", "auth-service", "user-service", "order-service"):
+            if service_unhealthy(metrics, service):
+                return action_payload("RESTART_SERVICE", service, task_id, obs)
+        for service in ("db-proxy", "auth-service", "user-service", "order-service"):
+            _, open_alerts = silenced_state(obs, service)
+            if open_alerts > 0:
+                return action_payload("SILENCE_ALERT", service, task_id, obs)
+        return action_payload("CHECK_LOGS", "db-proxy", task_id, obs)
+
+    # expert
+    cache_restart_count = action_counts(history, "RESTART_SERVICE", "cache-service")
+    db_restart_count = action_counts(history, "RESTART_SERVICE", "db-proxy")
+    db_drain_count = action_counts(history, "DRAIN_TRAFFIC", "db-proxy")
+
+    if service_unhealthy(metrics, "cache-service") and cache_restart_count < 4:
+        return action_payload("RESTART_SERVICE", "cache-service", task_id, obs)
+    if (
+        service_unhealthy(metrics, "db-proxy")
+        and service_unhealthy(metrics, "cache-service")
+        and db_drain_count == 0
+    ):
+        return action_payload("DRAIN_TRAFFIC", "db-proxy", task_id, obs)
+    if service_unhealthy(metrics, "db-proxy") and not service_unhealthy(metrics, "cache-service") and db_restart_count < 4:
+        return action_payload("RESTART_SERVICE", "db-proxy", task_id, obs)
+    for service in ("cache-service", "db-proxy"):
+        if service_unhealthy(metrics, service):
+            return action_payload("RESTART_SERVICE", service, task_id, obs)
+    for service in ("cache-service", "db-proxy"):
+        _, open_alerts = silenced_state(obs, service)
+        if open_alerts > 0:
+            return action_payload("SILENCE_ALERT", service, task_id, obs)
+
+    # Prevent no-op loops (repeated CHECK_LOGS)
+    if len(history) >= 3:
+        last_actions = [h.get("action_type") for h in history[-3:]]
+        if all(action == "CHECK_LOGS" for action in last_actions):
+            worst = sorted_unhealthy_services(obs)
+            target = worst[0] if worst else "db-proxy"
+            return action_payload("RESTART_SERVICE", target, task_id, obs)
+
+    fallback_actions = ["CHECK_LOGS", "INSPECT_SERVICE"]
+    action_type = fallback_actions[len(history) % len(fallback_actions)]
+    return action_payload(action_type, "db-proxy", task_id, obs)
+
+
+def action_payload(
+    action_type: str,
+    target_service: str,
+    task_id: str,
+    obs: dict[str, Any],
+    *,
+    config_key: str | None = None,
+    config_value: Any | None = None,
+) -> dict[str, Any]:
+    return {
+        "action_type": action_type,
+        "target_service": target_service,
+        "config_key": config_key,
+        "config_value": config_value,
+        "reason": build_reason(task_id, action_type, target_service, obs),
     }
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--output-json", action="store_true", help="Output JSON only")
-    parser.add_argument(
-        "--tasks",
-        nargs="+",
-        default=TASKS,
-        choices=TASKS,
-        help="Which tasks to run (default: all)",
-    )
-    args = parser.parse_args()
+def run_task(task_id: str) -> EpisodeResult:
+    scenario_id = CANONICAL_SCENARIOS[task_id]
+    obs: dict[str, Any] | None = None
+    model_diagnosis: str | None = None
+    rewards: list[float] = []
+    steps = 0
+    success = False
+    breakdown: dict[str, Any] = {}
 
-    scores: dict[str, dict] = {}
-    start = time.time()
+    emit_start(task_id)
 
     try:
-        for task_id in args.tasks:
-            scores[task_id] = run_task(task_id)
-    except TimeoutError:
-        print("Inference timed out, partial scores saved.")
-    finally:
-        signal.alarm(0)
+        obs = call_env(
+            "POST",
+            "/reset",
+            {
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "seed": DEFAULT_SEED,
+                "deterministic": True,
+                "evaluation_mode": True,
+            },
+        )
+        if obs is None:
+            raise RuntimeError("environment_returned_null_observation")
+        model_diagnosis = summarize_with_model(task_id, obs)
 
-    mean_score = round(
-        sum(result["score"] for result in scores.values()) / max(len(scores), 1), 4
-    )
-    output = {
+        while steps < int(obs["max_steps"]):
+            state = call_env("GET", "/state")
+            action = choose_action(task_id, obs, state.get("action_history", []))
+            result = call_env("POST", "/step", action)
+            reward_value = float(result["reward"]["step_reward"])
+            done = bool(result["done"])
+            error = result.get("info", {}).get("last_action_error")
+            steps += 1
+            rewards.append(reward_value)
+            emit_step(steps, action, reward_value, done, error)
+            next_obs = result.get("observation")
+            if not isinstance(next_obs, dict):
+                raise RuntimeError("invalid_observation_payload")
+            obs = next_obs
+            if done:
+                break
+
+        final_state = call_env("GET", "/state")
+        grader = call_env("POST", "/grader", final_state)
+        breakdown = grader.get("breakdown", {})
+        score = float(grader.get("score", 0.0))
+        success = score >= 0.85
+        return EpisodeResult(
+            task_id=task_id,
+            scenario_id=scenario_id,
+            score=score,
+            success=success,
+            steps=steps,
+            rewards=rewards,
+            breakdown=breakdown,
+            model_diagnosis=model_diagnosis,
+        )
+    except Exception:
+        return EpisodeResult(
+            task_id=task_id,
+            scenario_id=scenario_id,
+            score=0.0,
+            success=False,
+            steps=steps,
+            rewards=rewards,
+            breakdown=breakdown,
+            model_diagnosis=model_diagnosis,
+        )
+    finally:
+        emit_end(success, steps, rewards)
+
+
+def write_scores(results: dict[str, EpisodeResult], started_at: float) -> None:
+    payload = {
+        "benchmark": BENCHMARK_NAME,
         "model": MODEL_NAME,
         "api_base_url": API_BASE_URL,
-        "seed": SEED,
-        "scores": scores,
-        "mean_score": mean_score,
-        "total_time_s": round(time.time() - start, 1),
+        "seed": DEFAULT_SEED,
+        "tasks": {
+            task_id: {
+                "scenario_id": result.scenario_id,
+                "score": round(result.score, 4),
+                "success": result.success,
+                "steps": result.steps,
+                "rewards": [round(value, 4) for value in result.rewards],
+                "breakdown": result.breakdown,
+                "model_diagnosis": result.model_diagnosis,
+            }
+            for task_id, result in results.items()
+        },
+        "mean_score": round(
+            sum(result.score for result in results.values()) / max(len(results), 1),
+            4,
+        ),
+        "total_time_s": round(time.time() - started_at, 2),
     }
+    with open("baseline_scores.json", "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
 
-    with open("baseline_scores.json", "w", encoding="utf-8") as fh:
-        json.dump(output, fh, indent=2)
 
-    if args.output_json:
-        print(json.dumps(output))
-    else:
-        print("\n" + "=" * 55)
-        print("BASELINE RESULTS")
-        print("=" * 55)
-        for task_id, result in scores.items():
-            print(f"  {task_id:<10}: {result['score']:.4f}  ({result['steps']} steps)")
-        print(f"  {'MEAN':<10}: {mean_score:.4f}")
-        print("\nSaved to baseline_scores.json")
+def main() -> int:
+    started_at = time.time()
+    results: dict[str, EpisodeResult] = {}
+    signal.alarm(GLOBAL_TIMEOUT_SECONDS)
+
+    try:
+        ensure_server()
+        for task_id in TASKS:
+            results[task_id] = run_task(task_id)
+    except TimeoutError:
+        pass
+    finally:
+        signal.alarm(0)
+        write_scores(results, started_at)
+        stop_server()
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

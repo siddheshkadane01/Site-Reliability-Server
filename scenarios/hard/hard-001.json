@@ -41,7 +41,7 @@
   },
   "initial_config": {
     "db_timeout": 100,
-    "pool_size": 6,
+    "pool_size": 9,
     "replica_count": 1,
     "ttl": 180,
     "retry_count": 1,
@@ -75,10 +75,26 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-HARD-001",
+    "title": "Database timeout regression after config rollout",
+    "severity": "SEV-1",
+    "business_service": "Order creation and profile reads",
+    "customer_impact": "Checkout requests are timing out globally and queues are backing up.",
+    "symptom_summary": "A recent database-side rollout introduced a subtle data-plane regression with multiple plausible config suspects.",
+    "suspected_services": [
+      "db-proxy",
+      "order-service",
+      "user-service"
+    ],
+    "failure_mode": "hidden config regression with misleading deployment history",
+    "success_criteria": "Identify the real config fault, restore the correct data-plane setting, and recover the data path cleanly."
+  },
   "ground_truth": {
     "root_cause_service": "db-proxy",
     "correct_action": "UPDATE_CONFIG",
     "correct_config_key": "db_timeout",
-    "correct_config_value": 5000
+    "correct_config_value": 5000,
+    "misleading_action": "ROLLBACK"
   }
 }

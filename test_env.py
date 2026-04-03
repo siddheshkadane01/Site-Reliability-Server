@@ -27,6 +27,7 @@ def test_reset_returns_observation(env, task_id):
     obs = env.reset(task_id=task_id)
     assert obs.step == 0
     assert obs.task_id == task_id
+    assert obs.incident_context.incident_id.startswith("INC-")
     assert obs.health_summary.overall >= 0.0
     assert obs.health_summary.overall <= 1.0
     assert len(obs.metrics.cpu_pct) == 6
@@ -69,6 +70,7 @@ def test_step_invalid_action_penalised(env):
     )
     _, reward, _, info = env.step(action)
     assert info["action_valid"] is False
+    assert info["last_action_error"] is not None
     assert reward.step_reward <= 0.0
 
 
@@ -110,6 +112,112 @@ def test_reward_cumulative_accumulates(env):
             break
     state = env.state()
     assert abs(state.cumulative_reward - total) < 0.001
+
+
+def test_reset_is_deterministic_by_default():
+    env_a = SREEnvironment()
+    env_b = SREEnvironment()
+    obs_a = env_a.reset(task_id="easy")
+    obs_b = env_b.reset(task_id="easy")
+    assert obs_a.model_dump() == obs_b.model_dump()
+
+
+def test_same_actions_produce_same_trajectory():
+    env_a = SREEnvironment()
+    env_b = SREEnvironment()
+    obs_a = env_a.reset(task_id="hard")
+    obs_b = env_b.reset(task_id="hard")
+    assert obs_a.model_dump() == obs_b.model_dump()
+
+    actions = [
+        Action(action_type=ActionType.INSPECT_SERVICE, target_service="db-proxy"),
+        Action(
+            action_type=ActionType.UPDATE_CONFIG,
+            target_service="db-proxy",
+            config_key="db_timeout",
+            config_value=5000,
+        ),
+        Action(action_type=ActionType.RESTART_SERVICE, target_service="db-proxy"),
+    ]
+
+    for action in actions:
+        step_a = env_a.step(action)
+        step_b = env_b.step(action)
+        assert step_a[0].model_dump() == step_b[0].model_dump()
+        assert step_a[1].model_dump() == step_b[1].model_dump()
+        assert step_a[2] == step_b[2]
+        assert step_a[3] == step_b[3]
+
+
+def test_expert_wrong_order_has_explicit_penalty():
+    env = SREEnvironment()
+    env.reset(task_id="expert", scenario_id="expert-001")
+    _, reward, _, info = env.step(
+        Action(action_type=ActionType.RESTART_SERVICE, target_service="db-proxy")
+    )
+    assert info["action_valid"] is True
+    assert info["reward_breakdown"]["risk_penalty"] < 0.0
+    assert "before cache recovery" in info["action_details"]
+
+
+def test_hard_pool_size_fix_is_not_penalized_as_wrong_regression():
+    env = SREEnvironment()
+    env.reset(task_id="hard", scenario_id="hard-002")
+    _, reward, _, info = env.step(
+        Action(
+            action_type=ActionType.UPDATE_CONFIG,
+            target_service="db-proxy",
+            config_key="pool_size",
+            config_value=10,
+        )
+    )
+    assert info["action_valid"] is True
+    assert info["reward_breakdown"]["risk_penalty"] == 0.0
+    assert "Set pool_size=10" in info["action_details"]
+
+
+def test_hard_restart_only_counts_after_correct_fix():
+    env = SREEnvironment()
+    env.reset(task_id="hard", scenario_id="hard-001")
+    env.step(Action(action_type=ActionType.RESTART_SERVICE, target_service="db-proxy"))
+    env.step(
+        Action(
+            action_type=ActionType.UPDATE_CONFIG,
+            target_service="db-proxy",
+            config_key="db_timeout",
+            config_value=5000,
+        )
+    )
+    score, breakdown = env.grade()
+    assert 0.0 <= score <= 1.0
+    assert breakdown["restart_after_fix"] == 0.0
+
+
+def test_hard_exact_value_does_not_also_get_value_progress():
+    env = SREEnvironment()
+    env.reset(task_id="hard", scenario_id="hard-001")
+    env.step(Action(action_type=ActionType.INSPECT_SERVICE, target_service="db-proxy"))
+    env.step(
+        Action(
+            action_type=ActionType.UPDATE_CONFIG,
+            target_service="db-proxy",
+            config_key="db_timeout",
+            config_value=5000,
+        )
+    )
+    score, breakdown = env.grade()
+    assert 0.0 <= score <= 1.0
+    assert breakdown["correct_value"] == 0.20
+    assert breakdown["value_progress"] == 0.0
+
+
+def test_medium_log_only_secondary_follow_up_is_partial_credit():
+    env = SREEnvironment()
+    env.reset(task_id="medium", scenario_id="medium-001")
+    env.step(Action(action_type=ActionType.CHECK_LOGS, target_service="cache-service"))
+    score, breakdown = env.grade()
+    assert 0.0 <= score <= 1.0
+    assert breakdown["secondary_follow_up"] == 0.05
 
 
 # ---------------------------------------------------------------------------

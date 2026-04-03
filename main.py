@@ -9,13 +9,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from env.data_generator import generate_all_scenarios
 from env.environment import SREEnvironment
-from env.models import Action, EpisodeState
+from env.models import Action, EpisodeState, Observation, Reward
 from env.tasks import TASKS as TASK_LIST
 
-env = SREEnvironment()
+env = SREEnvironment(deterministic=True, evaluation_mode=True)
+
+
+class ResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: Literal["easy", "medium", "hard", "expert"] = Field(default="easy")
+    scenario_id: str | None = Field(default=None)
+    seed: int | None = Field(default=None)
+    deterministic: bool | None = Field(default=None)
+    evaluation_mode: bool | None = Field(default=None)
 
 # In-memory leaderboard — tracks best score per task across all sessions.
 _leaderboard_lock = threading.Lock()
@@ -86,10 +98,15 @@ def health():
 # ------------------------------------------------------------------
 
 @app.post("/reset")
-def reset(body: dict):
-    task_id = body.get("task_id", "easy")
-    scenario_id = body.get("scenario_id", None)
-    obs = env.reset(task_id=task_id, scenario_id=scenario_id)
+def reset(body: ResetRequest | None = None):
+    body = body or ResetRequest()
+    obs = env.reset(
+        task_id=body.task_id,
+        scenario_id=body.scenario_id,
+        seed=body.seed,
+        deterministic=body.deterministic,
+        evaluation_mode=body.evaluation_mode,
+    )
     return obs.model_dump()
 
 
@@ -120,6 +137,10 @@ def tasks():
             {
                 **task,
                 "action_schema": Action.model_json_schema(),
+                "observation_schema": Observation.model_json_schema(),
+                "reward_schema": Reward.model_json_schema(),
+                "deterministic_default": True,
+                "evaluation_mode_default": True,
             }
             for task in TASK_LIST
         ]
@@ -183,10 +204,11 @@ def baseline():
     import time
 
     inference_path = Path(__file__).with_name("inference.py")
+    scores_path = Path(__file__).with_name("baseline_scores.json")
     start = time.time()
     try:
         result = subprocess.run(
-            [sys.executable, str(inference_path), "--output-json"],
+            [sys.executable, str(inference_path)],
             capture_output=True,
             text=True,
             timeout=19 * 60,
@@ -213,16 +235,13 @@ def baseline():
             "total_time_s": elapsed,
         }
 
-    stdout_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-    candidate = stdout_lines[-1] if stdout_lines else ""
-
     try:
-        loaded = json.loads(candidate)
+        loaded = json.loads(scores_path.read_text(encoding="utf-8"))
     except Exception:
         return {
             "ok": False,
-            "error": "invalid_inference_json",
-            "message": "Could not parse JSON from inference.py output",
+            "error": "invalid_inference_artifact",
+            "message": "Could not parse baseline_scores.json produced by inference.py",
             "stdout_tail": (result.stdout or "")[-1200:],
             "stderr_tail": (result.stderr or "")[-1200:],
             "total_time_s": elapsed,

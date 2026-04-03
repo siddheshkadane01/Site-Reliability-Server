@@ -11,26 +11,26 @@
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.4744,
-      "latency_ms": 1280.03
+      "error_rate": 0.4253,
+      "latency_ms": 1903.99
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.4238,
-      "latency_ms": 1959.07
+      "error_rate": 0.4744,
+      "latency_ms": 1280.03
     },
     "order-service": {
       "cpu_pct": 44.0,
       "mem_pct": 54.0,
-      "error_rate": 0.339,
-      "latency_ms": 2556.19
+      "error_rate": 0.4238,
+      "latency_ms": 1959.07
     },
     "db-proxy": {
-      "cpu_pct": 87.59,
-      "mem_pct": 82.54,
-      "error_rate": 0.4161,
-      "latency_ms": 1588.92
+      "cpu_pct": 91.09,
+      "mem_pct": 77.36,
+      "error_rate": 0.441,
+      "latency_ms": 1496.13
     },
     "cache-service": {
       "cpu_pct": 28.0,
@@ -40,8 +40,8 @@
     }
   },
   "initial_config": {
-    "db_timeout": 100,
-    "pool_size": 8,
+    "db_timeout": 2500,
+    "pool_size": 4,
     "replica_count": 1,
     "ttl": 180,
     "retry_count": 2,
@@ -61,7 +61,7 @@
       "timestamp": "2025-01-01T01:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "db_timeout": 100,
+        "pool_size": 4,
         "retry_count": 2
       }
     },
@@ -75,10 +75,26 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-HARD-002",
+    "title": "Database timeout regression after config rollout",
+    "severity": "SEV-1",
+    "business_service": "Order creation and profile reads",
+    "customer_impact": "Checkout requests are timing out globally and queues are backing up.",
+    "symptom_summary": "A recent database-side rollout introduced a subtle data-plane regression with multiple plausible config suspects.",
+    "suspected_services": [
+      "db-proxy",
+      "order-service",
+      "user-service"
+    ],
+    "failure_mode": "hidden config regression with misleading deployment history",
+    "success_criteria": "Identify the real config fault, restore the correct data-plane setting, and recover the data path cleanly."
+  },
   "ground_truth": {
     "root_cause_service": "db-proxy",
     "correct_action": "UPDATE_CONFIG",
-    "correct_config_key": "db_timeout",
-    "correct_config_value": 5000
+    "correct_config_key": "pool_size",
+    "correct_config_value": 10,
+    "misleading_action": "ROLLBACK"
   }
 }

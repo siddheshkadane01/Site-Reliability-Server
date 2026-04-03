@@ -11,26 +11,26 @@
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.3881,
-      "latency_ms": 1627.27
+      "error_rate": 0.3695,
+      "latency_ms": 1590.04
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.3167,
-      "latency_ms": 2343.22
+      "error_rate": 0.3169,
+      "latency_ms": 2124.05
     },
     "order-service": {
       "cpu_pct": 44.0,
       "mem_pct": 54.0,
-      "error_rate": 0.5117,
-      "latency_ms": 2402.03
+      "error_rate": 0.4962,
+      "latency_ms": 2419.85
     },
     "db-proxy": {
-      "cpu_pct": 90.34,
-      "mem_pct": 78.41,
-      "error_rate": 0.2254,
-      "latency_ms": 1631.76
+      "cpu_pct": 80.9,
+      "mem_pct": 86.6,
+      "error_rate": 0.3008,
+      "latency_ms": 2011.29
     },
     "cache-service": {
       "cpu_pct": 28.0,
@@ -40,12 +40,12 @@
     }
   },
   "initial_config": {
-    "db_timeout": 100,
-    "pool_size": 7,
+    "db_timeout": 2500,
+    "pool_size": 4,
     "replica_count": 1,
     "ttl": 240,
-    "retry_count": 1,
-    "connection_pool": 4
+    "retry_count": 2,
+    "connection_pool": 5
   },
   "deploy_history": [
     {
@@ -61,8 +61,8 @@
       "timestamp": "2025-01-01T01:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "db_timeout": 100,
-        "retry_count": 1
+        "pool_size": 4,
+        "retry_count": 2
       }
     },
     {
@@ -70,15 +70,31 @@
       "timestamp": "2025-01-01T02:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "connection_pool": 4,
+        "connection_pool": 5,
         "ttl": 240
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-HARD-010",
+    "title": "Database timeout regression after config rollout",
+    "severity": "SEV-1",
+    "business_service": "Order creation and profile reads",
+    "customer_impact": "Checkout requests are timing out globally and queues are backing up.",
+    "symptom_summary": "A recent database-side rollout introduced a subtle data-plane regression with multiple plausible config suspects.",
+    "suspected_services": [
+      "db-proxy",
+      "order-service",
+      "user-service"
+    ],
+    "failure_mode": "hidden config regression with misleading deployment history",
+    "success_criteria": "Identify the real config fault, restore the correct data-plane setting, and recover the data path cleanly."
+  },
   "ground_truth": {
     "root_cause_service": "db-proxy",
     "correct_action": "UPDATE_CONFIG",
-    "correct_config_key": "db_timeout",
-    "correct_config_value": 5000
+    "correct_config_key": "pool_size",
+    "correct_config_value": 10,
+    "misleading_action": "ROLLBACK"
   }
 }

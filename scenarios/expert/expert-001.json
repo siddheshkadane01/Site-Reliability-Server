@@ -11,14 +11,14 @@
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.0536,
-      "latency_ms": 832.37
+      "error_rate": 0.1447,
+      "latency_ms": 522.52
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.084,
-      "latency_ms": 669.32
+      "error_rate": 0.1288,
+      "latency_ms": 631.28
     },
     "order-service": {
       "cpu_pct": 44.0,
@@ -27,16 +27,16 @@
       "latency_ms": 130.0
     },
     "db-proxy": {
-      "cpu_pct": 85.13,
-      "mem_pct": 82.87,
-      "error_rate": 0.314,
-      "latency_ms": 1131.15
+      "cpu_pct": 91.48,
+      "mem_pct": 76.25,
+      "error_rate": 0.1449,
+      "latency_ms": 1234.56
     },
     "cache-service": {
-      "cpu_pct": 86.62,
-      "mem_pct": 86.76,
-      "error_rate": 0.3888,
-      "latency_ms": 1286.26
+      "cpu_pct": 95.21,
+      "mem_pct": 87.27,
+      "error_rate": 0.442,
+      "latency_ms": 1096.42
     }
   },
   "initial_config": {
@@ -71,6 +71,21 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-EXP-001",
+    "title": "Cache pool exhaustion cascading into database saturation",
+    "severity": "SEV-1",
+    "business_service": "Checkout path and session validation",
+    "customer_impact": "Users are seeing failed checkouts and repeated session retries across regions.",
+    "symptom_summary": "Cache instability is driving database load, and fixing the wrong service first causes immediate relapse.",
+    "suspected_services": [
+      "cache-service",
+      "db-proxy",
+      "auth-service"
+    ],
+    "failure_mode": "multi-stage cascade requiring ordered remediation",
+    "success_criteria": "Recover cache first, then the database, while avoiding collateral restarts on healthy services."
+  },
   "ground_truth": {
     "root_cause_service": "cache-service",
     "secondary_cause_service": "db-proxy",

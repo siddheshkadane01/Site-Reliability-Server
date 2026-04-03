@@ -11,26 +11,26 @@
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.4756,
-      "latency_ms": 1301.56
+      "error_rate": 0.2528,
+      "latency_ms": 2069.62
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.34,
-      "latency_ms": 1642.65
+      "error_rate": 0.5287,
+      "latency_ms": 2510.03
     },
     "order-service": {
       "cpu_pct": 44.0,
       "mem_pct": 54.0,
-      "error_rate": 0.3687,
-      "latency_ms": 2140.37
+      "error_rate": 0.4437,
+      "latency_ms": 1840.11
     },
     "db-proxy": {
-      "cpu_pct": 85.96,
-      "mem_pct": 89.98,
-      "error_rate": 0.4491,
-      "latency_ms": 1487.91
+      "cpu_pct": 87.32,
+      "mem_pct": 76.5,
+      "error_rate": 0.3437,
+      "latency_ms": 2007.06
     },
     "cache-service": {
       "cpu_pct": 28.0,
@@ -41,9 +41,9 @@
   },
   "initial_config": {
     "db_timeout": 100,
-    "pool_size": 6,
+    "pool_size": 8,
     "replica_count": 1,
-    "ttl": 240,
+    "ttl": 300,
     "retry_count": 2,
     "connection_pool": 4
   },
@@ -71,14 +71,30 @@
       "service": "db-proxy",
       "changes": {
         "connection_pool": 4,
-        "ttl": 240
+        "ttl": 300
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-HARD-004",
+    "title": "Database timeout regression after config rollout",
+    "severity": "SEV-1",
+    "business_service": "Order creation and profile reads",
+    "customer_impact": "Checkout requests are timing out globally and queues are backing up.",
+    "symptom_summary": "A recent database-side rollout introduced a subtle data-plane regression with multiple plausible config suspects.",
+    "suspected_services": [
+      "db-proxy",
+      "order-service",
+      "user-service"
+    ],
+    "failure_mode": "hidden config regression with misleading deployment history",
+    "success_criteria": "Identify the real config fault, restore the correct data-plane setting, and recover the data path cleanly."
+  },
   "ground_truth": {
     "root_cause_service": "db-proxy",
     "correct_action": "UPDATE_CONFIG",
     "correct_config_key": "db_timeout",
-    "correct_config_value": 5000
+    "correct_config_value": 5000,
+    "misleading_action": "ROLLBACK"
   }
 }

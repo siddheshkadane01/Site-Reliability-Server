@@ -11,14 +11,14 @@
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.0831,
-      "latency_ms": 739.83
+      "error_rate": 0.0973,
+      "latency_ms": 388.49
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.0502,
-      "latency_ms": 859.07
+      "error_rate": 0.1364,
+      "latency_ms": 531.61
     },
     "order-service": {
       "cpu_pct": 44.0,
@@ -27,16 +27,16 @@
       "latency_ms": 130.0
     },
     "db-proxy": {
-      "cpu_pct": 86.49,
-      "mem_pct": 80.18,
-      "error_rate": 0.2086,
-      "latency_ms": 1376.59
+      "cpu_pct": 85.54,
+      "mem_pct": 83.51,
+      "error_rate": 0.2906,
+      "latency_ms": 1470.63
     },
     "cache-service": {
-      "cpu_pct": 84.41,
-      "mem_pct": 90.78,
-      "error_rate": 0.3767,
-      "latency_ms": 1245.05
+      "cpu_pct": 86.31,
+      "mem_pct": 93.8,
+      "error_rate": 0.1805,
+      "latency_ms": 1918.13
     }
   },
   "initial_config": {
@@ -51,7 +51,7 @@
       "timestamp": "2025-01-01T00:00:00Z",
       "service": "cache-service",
       "changes": {
-        "ttl": 240
+        "ttl": 300
       }
     },
     {
@@ -59,7 +59,7 @@
       "timestamp": "2025-01-01T00:30:00Z",
       "service": "cache-service",
       "changes": {
-        "pool_size": 5
+        "pool_size": 4
       }
     },
     {
@@ -71,6 +71,21 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-EXP-002",
+    "title": "Cache pool exhaustion cascading into database saturation",
+    "severity": "SEV-1",
+    "business_service": "Checkout path and session validation",
+    "customer_impact": "Users are seeing failed checkouts and repeated session retries across regions.",
+    "symptom_summary": "Cache instability is driving database load, and fixing the wrong service first causes immediate relapse.",
+    "suspected_services": [
+      "cache-service",
+      "db-proxy",
+      "auth-service"
+    ],
+    "failure_mode": "multi-stage cascade requiring ordered remediation",
+    "success_criteria": "Recover cache first, then the database, while avoiding collateral restarts on healthy services."
+  },
   "ground_truth": {
     "root_cause_service": "cache-service",
     "secondary_cause_service": "db-proxy",

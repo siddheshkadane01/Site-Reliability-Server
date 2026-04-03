@@ -1,13 +1,14 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ActionType(str, Enum):
     CHECK_LOGS = "CHECK_LOGS"
     INSPECT_SERVICE = "INSPECT_SERVICE"
+    DRAIN_TRAFFIC = "DRAIN_TRAFFIC"
     RESTART_SERVICE = "RESTART_SERVICE"
     SCALE_UP = "SCALE_UP"
     SCALE_DOWN = "SCALE_DOWN"
@@ -27,6 +28,8 @@ VALID_SERVICES = [
 
 
 class SystemMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     cpu_pct: dict[str, float] = Field(description="Per-service CPU usage 0-100")
     mem_pct: dict[str, float] = Field(description="Per-service memory usage 0-100")
     error_rate: dict[str, float] = Field(description="Per-service HTTP error rate 0.0-1.0")
@@ -35,6 +38,8 @@ class SystemMetrics(BaseModel):
 
 
 class LogEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     timestamp: datetime = Field(description="Timestamp of the log entry")
     service: str = Field(description="Service that emitted the log")
     severity: str = Field(description="Severity level: DEBUG, INFO, WARN, ERROR, CRITICAL")
@@ -42,6 +47,8 @@ class LogEntry(BaseModel):
 
 
 class DeployEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     deploy_id: str = Field(description="Unique deployment identifier")
     timestamp: datetime = Field(description="Deployment timestamp")
     service: str = Field(description="Service affected by deployment")
@@ -49,6 +56,8 @@ class DeployEvent(BaseModel):
 
 
 class Alert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     alert_id: str = Field(description="Unique alert identifier")
     service: str = Field(description="Service associated with the alert")
     metric: str = Field(description="Metric that breached threshold")
@@ -60,14 +69,34 @@ class Alert(BaseModel):
 
 
 class HealthSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     per_service: dict[str, float] = Field(description="Per-service health score in range 0.0-1.0")
     overall: float = Field(description="Mean health score across all services")
 
 
+class IncidentContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    incident_id: str = Field(description="Stable incident identifier")
+    title: str = Field(description="Short incident title")
+    severity: Literal["SEV-1", "SEV-2", "SEV-3"] = Field(description="Business severity")
+    business_service: str = Field(description="Customer-facing capability affected")
+    customer_impact: str = Field(description="Summary of user-visible impact")
+    symptom_summary: str = Field(description="Primary symptom reported by monitoring or humans")
+    suspected_services: list[str] = Field(description="Services initially suspected by triage")
+    failure_mode: str = Field(description="Operational pattern behind the incident")
+    success_criteria: str = Field(description="What successful mitigation looks like")
+
+
 class Observation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     step: int = Field(description="Current step in episode")
     max_steps: int = Field(description="Max steps allowed")
-    task_id: str = Field(description="Active task: easy|medium|hard")
+    task_id: Literal["easy", "medium", "hard", "expert"] = Field(
+        description="Active task: easy|medium|hard|expert"
+    )
     metrics: SystemMetrics = Field(description="Current system metrics")
     logs: list[LogEntry] = Field(description="Last 10 log entries")
     deploy_history: list[DeployEvent] = Field(description="Last 5 deploy events")
@@ -75,31 +104,49 @@ class Observation(BaseModel):
     service_graph: dict[str, list[str]] = Field(description="Service dependency map")
     active_alerts: list[Alert] = Field(description="Active alerts")
     health_summary: HealthSummary = Field(description="Current health summary")
+    incident_context: IncidentContext = Field(description="Current incident ticket and operational context")
 
 
 class Action(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     action_type: ActionType = Field(description="Type of action to perform")
-    target_service: str = Field(description="Must be one of VALID_SERVICES")
+    target_service: Literal[
+        "api-gateway",
+        "auth-service",
+        "user-service",
+        "order-service",
+        "db-proxy",
+        "cache-service",
+    ] = Field(description="Must be one of VALID_SERVICES")
     config_key: str | None = Field(default=None, description="Required for UPDATE_CONFIG")
     config_value: Any | None = Field(default=None, description="Required for UPDATE_CONFIG")
     reason: str | None = Field(default=None, description="Agent reasoning used by Task 1 grader")
 
 
 class RewardBreakdown(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     health_delta: float = Field(description="Weighted health delta contribution")
+    task_progress: float = Field(description="Weighted progress on the critical incident services")
     cost_efficiency: float = Field(description="Weighted cost efficiency contribution")
     latency_delta: float = Field(description="Weighted latency contribution")
     invalid_penalty: float = Field(description="Weighted invalid action penalty")
+    risk_penalty: float = Field(description="Penalty for disruptive or misleading actions")
 
 
 class Reward(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     step_reward: float = Field(description="Reward for the current step")
     cumulative: float = Field(description="Cumulative reward for the episode")
     breakdown: RewardBreakdown = Field(description="Reward component breakdown")
 
 
 class EpisodeState(BaseModel):
-    task_id: str = Field(description="Current task id")
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: Literal["easy", "medium", "hard", "expert"] = Field(description="Current task id")
     scenario_id: str = Field(description="Active scenario id")
     step: int = Field(description="Current step count")
     done: bool = Field(description="Whether the episode has terminated")

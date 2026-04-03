@@ -3,10 +3,10 @@
   "task_id": "medium",
   "initial_state": {
     "api-gateway": {
-      "cpu_pct": 88.52,
-      "mem_pct": 94.66,
-      "error_rate": 0.2115,
-      "latency_ms": 977.09
+      "cpu_pct": 95.9,
+      "mem_pct": 95.42,
+      "error_rate": 0.0737,
+      "latency_ms": 1337.39
     },
     "auth-service": {
       "cpu_pct": 38.0,
@@ -34,9 +34,9 @@
     },
     "cache-service": {
       "cpu_pct": 28.0,
-      "mem_pct": 85.61,
-      "error_rate": 0.0342,
-      "latency_ms": 311.22
+      "mem_pct": 85.66,
+      "error_rate": 0.0756,
+      "latency_ms": 198.69
     }
   },
   "initial_config": {
@@ -63,8 +63,23 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-MED-003",
+    "title": "Traffic surge saturating api-gateway",
+    "severity": "SEV-2",
+    "business_service": "Checkout and account services",
+    "customer_impact": "High request latency and elevated 5xx rate during a traffic surge.",
+    "symptom_summary": "Autoscaling has not reacted fast enough and a dependency is beginning to flap.",
+    "suspected_services": [
+      "api-gateway",
+      "cache-service"
+    ],
+    "failure_mode": "capacity pressure with dependent-service stress",
+    "success_criteria": "Stabilize all service health metrics without masking the incident with unnecessary actions."
+  },
   "ground_truth": {
     "root_cause_service": "api-gateway",
+    "secondary_cause_service": "cache-service",
     "correct_action": "SCALE_UP",
     "correct_config_key": null,
     "correct_config_value": null

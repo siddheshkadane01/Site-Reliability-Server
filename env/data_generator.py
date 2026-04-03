@@ -32,6 +32,30 @@ BASE_CONFIG = {
 }
 
 
+def _incident_context(
+    incident_id: str,
+    title: str,
+    severity: str,
+    business_service: str,
+    customer_impact: str,
+    symptom_summary: str,
+    suspected_services: list[str],
+    failure_mode: str,
+    success_criteria: str,
+) -> dict:
+    return {
+        "incident_id": incident_id,
+        "title": title,
+        "severity": severity,
+        "business_service": business_service,
+        "customer_impact": customer_impact,
+        "symptom_summary": symptom_summary,
+        "suspected_services": suspected_services,
+        "failure_mode": failure_mode,
+        "success_criteria": success_criteria,
+    }
+
+
 def _iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -88,6 +112,17 @@ def _make_easy(index: int) -> dict:
         "initial_state": state,
         "initial_config": config,
         "deploy_history": _base_deploy_history(root, {"pool_size": random.choice([5, 6, 7])}),
+        "incident_context": _incident_context(
+            incident_id=f"INC-EASY-{index:03d}",
+            title=f"Customer-facing latency spike traced to {root}",
+            severity="SEV-2",
+            business_service="Core platform APIs",
+            customer_impact="Requests are timing out intermittently for a subset of users.",
+            symptom_summary="PagerDuty fired on elevated latency and error rate after a routine service restart window.",
+            suspected_services=[root] + red_herrings[:2],
+            failure_mode="single-service degradation with noisy downstream alerts",
+            success_criteria="Restore the primary failing service and leave the rest of the stack stable.",
+        ),
         "ground_truth": {
             "root_cause_service": root,
             "correct_action": "RESTART_SERVICE",
@@ -120,11 +155,15 @@ def _make_medium(index: int) -> dict:
         state["cache-service"]["latency_ms"] = round(random.uniform(180.0, 450.0), 2)
         state["cache-service"]["error_rate"] = round(random.uniform(0.03, 0.09), 4)
         state["cache-service"]["mem_pct"] = round(random.uniform(78.0, 88.0), 2)
+        secondary = "cache-service"
     elif hotspot == "order-service":
         state["db-proxy"]["latency_ms"] = round(random.uniform(180.0, 400.0), 2)
         state["db-proxy"]["cpu_pct"] = round(random.uniform(68.0, 82.0), 2)
+        secondary = "db-proxy"
     elif hotspot == "auth-service":
         state["cache-service"]["error_rate"] = round(random.uniform(0.02, 0.07), 4)
+        state["cache-service"]["latency_ms"] = round(random.uniform(220.0, 520.0), 2)
+        secondary = "cache-service"
 
     return {
         "scenario_id": f"medium-{index:03d}",
@@ -132,8 +171,20 @@ def _make_medium(index: int) -> dict:
         "initial_state": state,
         "initial_config": config,
         "deploy_history": _base_deploy_history(hotspot, {"replica_count": random.choice([1, 2])}),
+        "incident_context": _incident_context(
+            incident_id=f"INC-MED-{index:03d}",
+            title=f"Traffic surge saturating {hotspot}",
+            severity="SEV-2",
+            business_service="Checkout and account services",
+            customer_impact="High request latency and elevated 5xx rate during a traffic surge.",
+            symptom_summary="Autoscaling has not reacted fast enough and a dependency is beginning to flap.",
+            suspected_services=[hotspot, secondary],
+            failure_mode="capacity pressure with dependent-service stress",
+            success_criteria="Stabilize all service health metrics without masking the incident with unnecessary actions.",
+        ),
         "ground_truth": {
             "root_cause_service": hotspot,
+            "secondary_cause_service": secondary,
             "correct_action": "SCALE_UP",
             "correct_config_key": None,
             "correct_config_value": None,
@@ -151,11 +202,15 @@ def _make_medium(index: int) -> dict:
 def _make_hard(index: int) -> dict:
     state = deepcopy(BASELINE_STATE)
     config = deepcopy(BASE_CONFIG)
-
-    # The real misconfiguration
-    config["db_timeout"] = 100
-    # Red-herring configs (suboptimal but not causative)
-    config["pool_size"] = random.choice([6, 7, 8])
+    root_key = random.choice(["db_timeout", "pool_size"])
+    if root_key == "db_timeout":
+        config["db_timeout"] = 100
+        config["pool_size"] = random.choice([7, 8, 9])
+        correct_value = 5000
+    else:
+        config["pool_size"] = random.choice([4, 5])
+        config["db_timeout"] = random.choice([2500, 3000, 4000])
+        correct_value = 10
     config["retry_count"] = random.choice([1, 2])
     config["connection_pool"] = random.choice([4, 5])
     config["ttl"] = random.choice([180, 240, 300])
@@ -183,7 +238,7 @@ def _make_hard(index: int) -> dict:
             "deploy_id": "d002",
             "timestamp": _iso(base + timedelta(hours=1)),
             "service": "db-proxy",
-            "changes": {"db_timeout": 100, "retry_count": config["retry_count"]},
+            "changes": {root_key: config[root_key], "retry_count": config["retry_count"]},
         },
         # d003: a distracting red-herring deploy that changes a different key
         {
@@ -200,11 +255,23 @@ def _make_hard(index: int) -> dict:
         "initial_state": state,
         "initial_config": config,
         "deploy_history": deploy_history,
+        "incident_context": _incident_context(
+            incident_id=f"INC-HARD-{index:03d}",
+            title="Database timeout regression after config rollout",
+            severity="SEV-1",
+            business_service="Order creation and profile reads",
+            customer_impact="Checkout requests are timing out globally and queues are backing up.",
+            symptom_summary="A recent database-side rollout introduced a subtle data-plane regression with multiple plausible config suspects.",
+            suspected_services=["db-proxy", "order-service", "user-service"],
+            failure_mode="hidden config regression with misleading deployment history",
+            success_criteria="Identify the real config fault, restore the correct data-plane setting, and recover the data path cleanly.",
+        ),
         "ground_truth": {
             "root_cause_service": "db-proxy",
             "correct_action": "UPDATE_CONFIG",
-            "correct_config_key": "db_timeout",
-            "correct_config_value": 5000,
+            "correct_config_key": root_key,
+            "correct_config_value": correct_value,
+            "misleading_action": "ROLLBACK",
         },
     }
 
@@ -265,6 +332,17 @@ def _make_expert(index: int) -> dict:
         "initial_state": state,
         "initial_config": config,
         "deploy_history": deploy_history,
+        "incident_context": _incident_context(
+            incident_id=f"INC-EXP-{index:03d}",
+            title="Cache pool exhaustion cascading into database saturation",
+            severity="SEV-1",
+            business_service="Checkout path and session validation",
+            customer_impact="Users are seeing failed checkouts and repeated session retries across regions.",
+            symptom_summary="Cache instability is driving database load, and fixing the wrong service first causes immediate relapse.",
+            suspected_services=["cache-service", "db-proxy", "auth-service"],
+            failure_mode="multi-stage cascade requiring ordered remediation",
+            success_criteria="Recover cache first, then the database, while avoiding collateral restarts on healthy services.",
+        ),
         "ground_truth": {
             "root_cause_service": "cache-service",
             "secondary_cause_service": "db-proxy",

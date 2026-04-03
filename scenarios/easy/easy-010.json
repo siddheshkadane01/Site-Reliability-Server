@@ -63,6 +63,21 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-EASY-010",
+    "title": "Customer-facing latency spike traced to user-service",
+    "severity": "SEV-2",
+    "business_service": "Core platform APIs",
+    "customer_impact": "Requests are timing out intermittently for a subset of users.",
+    "symptom_summary": "PagerDuty fired on elevated latency and error rate after a routine service restart window.",
+    "suspected_services": [
+      "user-service",
+      "auth-service",
+      "cache-service"
+    ],
+    "failure_mode": "single-service degradation with noisy downstream alerts",
+    "success_criteria": "Restore the primary failing service and leave the rest of the stack stable."
+  },
   "ground_truth": {
     "root_cause_service": "user-service",
     "correct_action": "RESTART_SERVICE",

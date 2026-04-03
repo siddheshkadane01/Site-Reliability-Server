@@ -3,21 +3,21 @@ TASKS = [
         "id": "easy",
         "name": "The Detective",
         "difficulty": "easy",
-        "description": "Identify the root-cause microservice in a cascading failure",
+        "description": "Stabilize a single-service incident with noisy downstream alerts and clean operational hygiene",
         "max_steps": 15,
     },
     {
         "id": "medium",
         "name": "The First Responder",
         "difficulty": "medium",
-        "description": "Restore all system health metrics during a traffic spike",
+        "description": "Handle a traffic surge with secondary dependency pressure using durable capacity fixes and temporary load shedding without oscillating",
         "max_steps": 15,
     },
     {
         "id": "hard",
         "name": "The Architect",
         "difficulty": "hard",
-        "description": "Diagnose and fix a hidden database timeout misconfiguration",
+        "description": "Diagnose a misleading deployment trail with multiple plausible db-proxy config regressions and repair the true cause",
         "max_steps": 20,
     },
     {
@@ -25,9 +25,8 @@ TASKS = [
         "name": "The Storm Chaser",
         "difficulty": "expert",
         "description": (
-            "Resolve a dual-service cascading failure where a network partition "
-            "has split the data layer. Two services must be fixed in the correct "
-            "causal order — fixing the wrong one first leaves the system degraded."
+            "Resolve a cache-to-database cascade in the correct causal order; "
+            "stabilizing the wrong service first causes immediate relapse."
         ),
         "max_steps": 25,
     },

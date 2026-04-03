@@ -11,14 +11,14 @@
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.1367,
-      "latency_ms": 529.4
+      "error_rate": 0.1722,
+      "latency_ms": 722.52
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.1406,
-      "latency_ms": 654.93
+      "error_rate": 0.1674,
+      "latency_ms": 688.53
     },
     "order-service": {
       "cpu_pct": 44.0,
@@ -27,16 +27,16 @@
       "latency_ms": 130.0
     },
     "db-proxy": {
-      "cpu_pct": 87.29,
-      "mem_pct": 73.99,
-      "error_rate": 0.327,
-      "latency_ms": 1307.12
+      "cpu_pct": 83.63,
+      "mem_pct": 76.73,
+      "error_rate": 0.1493,
+      "latency_ms": 1220.45
     },
     "cache-service": {
-      "cpu_pct": 88.61,
-      "mem_pct": 96.44,
-      "error_rate": 0.4286,
-      "latency_ms": 1585.47
+      "cpu_pct": 92.36,
+      "mem_pct": 89.3,
+      "error_rate": 0.2635,
+      "latency_ms": 1349.23
     }
   },
   "initial_config": {
@@ -51,7 +51,7 @@
       "timestamp": "2025-01-01T00:00:00Z",
       "service": "cache-service",
       "changes": {
-        "ttl": 240
+        "ttl": 300
       }
     },
     {
@@ -71,6 +71,21 @@
       }
     }
   ],
+  "incident_context": {
+    "incident_id": "INC-EXP-003",
+    "title": "Cache pool exhaustion cascading into database saturation",
+    "severity": "SEV-1",
+    "business_service": "Checkout path and session validation",
+    "customer_impact": "Users are seeing failed checkouts and repeated session retries across regions.",
+    "symptom_summary": "Cache instability is driving database load, and fixing the wrong service first causes immediate relapse.",
+    "suspected_services": [
+      "cache-service",
+      "db-proxy",
+      "auth-service"
+    ],
+    "failure_mode": "multi-stage cascade requiring ordered remediation",
+    "success_criteria": "Recover cache first, then the database, while avoiding collateral restarts on healthy services."
+  },
   "ground_truth": {
     "root_cause_service": "cache-service",
     "secondary_cause_service": "db-proxy",

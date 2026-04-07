@@ -1,6 +1,13 @@
 from .models import EpisodeState
 
 
+_VALIDATOR_EPS = 0.0001
+
+
+def _validator_safe_score(raw_score: float) -> float:
+    return round(_VALIDATOR_EPS + raw_score * (1 - 2 * _VALIDATOR_EPS), 4)
+
+
 def _load_ground_truth(state: EpisodeState) -> dict:
     import json
     from pathlib import Path
@@ -127,7 +134,8 @@ def grade_easy(state: EpisodeState) -> tuple[float, dict]:
         breakdown["efficiency"] = 0.05
 
     score = sum(breakdown.values())
-    return round(min(1.0, score), 4), breakdown
+    breakdown["raw_score"] = round(score, 4)
+    return _validator_safe_score(score), breakdown
 
 
 def grade_medium(state: EpisodeState) -> tuple[float, dict]:
@@ -290,7 +298,8 @@ def grade_medium(state: EpisodeState) -> tuple[float, dict]:
     breakdown["discipline_component"] = round(discipline, 4)
     breakdown["unnecessary_scale_down_count"] = unnecessary_scale_down
 
-    return round(max(0.0, min(1.0, score)), 4), breakdown
+    breakdown["raw_score"] = round(score, 4)
+    return _validator_safe_score(score), breakdown
 
 
 def grade_hard(state: EpisodeState) -> tuple[float, dict]:
@@ -421,7 +430,8 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
     )
 
     score = sum(components.values())
-    return round(min(1.0, score), 4), breakdown
+    breakdown["raw_score"] = round(score, 4)
+    return _validator_safe_score(score), breakdown
 
 
 def grade_expert(state: EpisodeState) -> tuple[float, dict]:
@@ -578,7 +588,8 @@ def grade_expert(state: EpisodeState) -> tuple[float, dict]:
     breakdown["post_recovery_noops"] = post_recovery_noops
 
     score = sum(components.values())
-    return round(min(1.0, score), 4), breakdown
+    breakdown["raw_score"] = round(score, 4)
+    return _validator_safe_score(score), breakdown
 
 
 GRADERS = {

@@ -116,10 +116,16 @@ def emit_step(step: int, action: dict[str, Any], reward: float, done: bool, erro
     )
 
 
-def emit_end(success: bool, steps: int, rewards: list[float]) -> None:
+def emit_end(
+    success: bool,
+    steps: int,
+    rewards: list[float],
+    score: float = 0.0,
+) -> None:
     rewards_payload = ",".join(format_reward(value) for value in rewards)
     print(
-        f"[END] success={bool_text(success)} steps={steps} rewards={rewards_payload}",
+        f"[END] success={bool_text(success)} steps={steps} "
+        f"score={format_reward(score)} rewards={rewards_payload}",
         flush=True,
     )
 
@@ -502,6 +508,7 @@ def run_task(task_id: TaskId) -> EpisodeResult:
     obs: dict[str, Any] | None = None
     model_diagnosis: str | None = None
     rewards: list[float] = []
+    score: float = 0.0
     steps = 0
     success = False
     breakdown: dict[str, Any] = {}
@@ -568,7 +575,7 @@ def run_task(task_id: TaskId) -> EpisodeResult:
             model_diagnosis=model_diagnosis,
         )
     finally:
-        emit_end(success, steps, rewards)
+        emit_end(success, steps, rewards, score)
 
 
 def write_scores(results: dict[str, EpisodeResult], started_at: float) -> None:
